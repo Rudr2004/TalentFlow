@@ -214,36 +214,74 @@ export class DatabaseStorage implements IStorage {
     return stats;
   }
 
-  async getUserActions(userId?: string): Promise<UserAction[]> {
-    const actions = Array.from(this.userActions.values());
+  // User action operations
+  async getUserActions(params?: { userId?: string; limit?: number; offset?: number }): Promise<UserAction[]> {
+    const { userId, limit = 100, offset = 0 } = params || {};
+    
+    let query = db.select().from(userActions);
+    
     if (userId) {
-      return actions.filter(action => action.userId === userId);
+      query = query.where(eq(userActions.userId, userId));
     }
-    return actions.sort((a, b) => b.timestamp!.getTime() - a.timestamp!.getTime());
+    
+    return query
+      .orderBy(desc(userActions.timestamp))
+      .limit(limit)
+      .offset(offset);
   }
 
   async createUserAction(insertAction: InsertUserAction): Promise<UserAction> {
-    const id = randomUUID();
-    const action: UserAction = {
-      ...insertAction,
-      id,
-      timestamp: new Date(),
-    };
-    this.userActions.set(id, action);
+    const [action] = await db
+      .insert(userActions)
+      .values(insertAction)
+      .returning();
+    
     return action;
   }
 
+  // Contact form operations
   async createContactForm(insertForm: InsertContactForm): Promise<ContactForm> {
-    const id = randomUUID();
-    const form: ContactForm = {
-      ...insertForm,
-      id,
-      message: insertForm.message || null,
-      createdAt: new Date(),
-    };
-    this.contactForms.set(id, form);
+    const [form] = await db
+      .insert(contactForms)
+      .values(insertForm)
+      .returning();
+    
     return form;
+  }
+
+  // Notification operations
+  async getUserNotifications(userId: string, unreadOnly?: boolean): Promise<Notification[]> {
+    let query = db.select().from(notifications).where(eq(notifications.userId, userId));
+    
+    if (unreadOnly) {
+      query = query.where(eq(notifications.isRead, false));
+    }
+    
+    return query.orderBy(desc(notifications.createdAt));
+  }
+
+  async createNotification(insertNotification: InsertNotification): Promise<Notification> {
+    const [notification] = await db
+      .insert(notifications)
+      .values(insertNotification)
+      .returning();
+    
+    return notification;
+  }
+
+  async markNotificationAsRead(id: string): Promise<void> {
+    await db
+      .update(notifications)
+      .set({ isRead: true })
+      .where(eq(notifications.id, id));
+  }
+
+  async markAllNotificationsAsRead(userId: string): Promise<void> {
+    await db
+      .update(notifications)
+      .set({ isRead: true })
+      .where(eq(notifications.userId, userId));
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();
