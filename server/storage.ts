@@ -1,174 +1,217 @@
-import { type User, type InsertUser, type Candidate, type InsertCandidate, type UserAction, type InsertUserAction, type ContactForm, type InsertContactForm } from "@shared/schema";
-import { randomUUID } from "crypto";
+import { 
+  users, 
+  candidates, 
+  userActions, 
+  contactForms, 
+  notifications,
+  type User, 
+  type InsertUser, 
+  type Candidate, 
+  type InsertCandidate, 
+  type UserAction, 
+  type InsertUserAction, 
+  type ContactForm, 
+  type InsertContactForm,
+  type Notification,
+  type InsertNotification
+} from "@shared/schema";
+import { db } from "./db";
+import { eq, desc, and, or, like, sql } from "drizzle-orm";
+import bcrypt from "bcrypt";
 
 export interface IStorage {
+  // User operations
   getUser(id: string): Promise<User | undefined>;
-  getUserByUsername(username: string): Promise<User | undefined>;
+  getUserByEmail(email: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
+  updateUserLastLogin(id: string): Promise<void>;
+  verifyPassword(plainPassword: string, hashedPassword: string): Promise<boolean>;
   
-  getCandidates(limit?: number, offset?: number): Promise<Candidate[]>;
+  // Candidate operations
+  getCandidates(params?: {
+    limit?: number;
+    offset?: number;
+    source?: string;
+    aiRecommended?: boolean;
+    search?: string;
+    status?: string;
+  }): Promise<Candidate[]>;
   getCandidate(id: string): Promise<Candidate | undefined>;
   getCandidatesBySource(source: string): Promise<Candidate[]>;
   getAiRecommendedCandidates(): Promise<Candidate[]>;
   createCandidate(candidate: InsertCandidate): Promise<Candidate>;
   updateCandidateStatus(id: string, status: string): Promise<Candidate | undefined>;
+  getCandidateStats(): Promise<{
+    totalCandidates: number;
+    aiRecommended: number;
+    linkedin: number;
+    indeed: number;
+    shortlisted: number;
+    contacted: number;
+    rejected: number;
+  }>;
   
-  getUserActions(userId?: string): Promise<UserAction[]>;
+  // User action operations
+  getUserActions(params?: { userId?: string; limit?: number; offset?: number }): Promise<UserAction[]>;
   createUserAction(action: InsertUserAction): Promise<UserAction>;
   
+  // Contact form operations
   createContactForm(form: InsertContactForm): Promise<ContactForm>;
+  
+  // Notification operations
+  getUserNotifications(userId: string, unreadOnly?: boolean): Promise<Notification[]>;
+  createNotification(notification: InsertNotification): Promise<Notification>;
+  markNotificationAsRead(id: string): Promise<void>;
+  markAllNotificationsAsRead(userId: string): Promise<void>;
 }
 
-export class MemStorage implements IStorage {
-  private users: Map<string, User>;
-  private candidates: Map<string, Candidate>;
-  private userActions: Map<string, UserAction>;
-  private contactForms: Map<string, ContactForm>;
+export class DatabaseStorage implements IStorage {
+  constructor() {}
 
-  constructor() {
-    this.users = new Map();
-    this.candidates = new Map();
-    this.userActions = new Map();
-    this.contactForms = new Map();
-    
-    // Initialize with some demo data
-    this.initializeDemoData();
+  async verifyPassword(plainPassword: string, hashedPassword: string): Promise<boolean> {
+    return bcrypt.compare(plainPassword, hashedPassword);
   }
 
-  private initializeDemoData() {
-    // Create demo admin user
-    const adminId = randomUUID();
-    const admin: User = {
-      id: adminId,
-      username: "admin",
-      password: "admin123",
-      role: "admin",
-      createdAt: new Date(),
-    };
-    this.users.set(adminId, admin);
-
-    // Create demo candidates
-    const candidates = [
-      {
-        name: "Sarah Johnson",
-        email: "sarah.johnson@email.com",
-        source: "linkedin",
-        skills: ["React", "TypeScript", "Node.js", "Python"],
-        experience: "5 years in full-stack development",
-        summary: "Experienced full-stack developer with expertise in modern web technologies",
-        aiScore: "95.7",
-        isAiRecommended: true,
-        status: "pending",
-      },
-      {
-        name: "Michael Chen",
-        email: "michael.chen@email.com",
-        source: "indeed",
-        skills: ["Java", "Spring Boot", "AWS", "Docker"],
-        experience: "7 years in backend development",
-        summary: "Senior backend engineer with cloud architecture experience",
-        aiScore: "92.3",
-        isAiRecommended: true,
-        status: "shortlisted",
-      },
-      {
-        name: "Emily Rodriguez",
-        email: "emily.rodriguez@email.com",
-        source: "linkedin",
-        skills: ["UI/UX", "Figma", "React", "CSS"],
-        experience: "4 years in frontend development",
-        summary: "Creative frontend developer with strong design skills",
-        aiScore: "88.9",
-        isAiRecommended: false,
-        status: "pending",
-      },
-    ];
-
-    candidates.forEach(candidateData => {
-      const id = randomUUID();
-      const candidate: Candidate = {
-        id,
-        ...candidateData,
-        skills: candidateData.skills || [],
-        experience: candidateData.experience || null,
-        summary: candidateData.summary || null,
-        aiScore: candidateData.aiScore || null,
-        isAiRecommended: candidateData.isAiRecommended || false,
-        createdAt: new Date(),
-      };
-      this.candidates.set(id, candidate);
-    });
+  private async hashPassword(password: string): Promise<string> {
+    return bcrypt.hash(password, 10);
   }
 
+  // User operations
   async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
-  }
-
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
-  }
-
-  async createUser(insertUser: InsertUser): Promise<User> {
-    const id = randomUUID();
-    const user: User = { 
-      ...insertUser, 
-      id,
-      role: insertUser.role || "user",
-      createdAt: new Date(),
-    };
-    this.users.set(id, user);
+    const [user] = await db.select().from(users).where(eq(users.id, id));
     return user;
   }
 
-  async getCandidates(limit = 50, offset = 0): Promise<Candidate[]> {
-    const allCandidates = Array.from(this.candidates.values())
-      .sort((a, b) => b.createdAt!.getTime() - a.createdAt!.getTime());
-    return allCandidates.slice(offset, offset + limit);
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.email, email));
+    return user;
+  }
+
+  async createUser(insertUser: InsertUser): Promise<User> {
+    const hashedPassword = await this.hashPassword(insertUser.password);
+    
+    const [user] = await db
+      .insert(users)
+      .values({
+        ...insertUser,
+        password: hashedPassword,
+      })
+      .returning();
+    
+    return user;
+  }
+
+  async updateUserLastLogin(id: string): Promise<void> {
+    await db
+      .update(users)
+      .set({ lastLogin: new Date(), updatedAt: new Date() })
+      .where(eq(users.id, id));
+  }
+
+  // Candidate operations
+  async getCandidates(params?: {
+    limit?: number;
+    offset?: number;
+    source?: string;
+    aiRecommended?: boolean;
+    search?: string;
+    status?: string;
+  }): Promise<Candidate[]> {
+    const { limit = 50, offset = 0, source, aiRecommended, search, status } = params || {};
+    
+    let query = db.select().from(candidates);
+    const conditions: any[] = [];
+
+    if (source) {
+      conditions.push(eq(candidates.source, source));
+    }
+
+    if (aiRecommended !== undefined) {
+      conditions.push(eq(candidates.isAiRecommended, aiRecommended));
+    }
+
+    if (status) {
+      conditions.push(eq(candidates.status, status));
+    }
+
+    if (search) {
+      conditions.push(
+        or(
+          like(candidates.name, `%${search}%`),
+          like(candidates.email, `%${search}%`),
+          like(candidates.jobTitle, `%${search}%`),
+          like(candidates.company, `%${search}%`)
+        )
+      );
+    }
+
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions));
+    }
+
+    return query
+      .orderBy(desc(candidates.createdAt))
+      .limit(limit)
+      .offset(offset);
   }
 
   async getCandidate(id: string): Promise<Candidate | undefined> {
-    return this.candidates.get(id);
+    const [candidate] = await db.select().from(candidates).where(eq(candidates.id, id));
+    return candidate;
   }
 
   async getCandidatesBySource(source: string): Promise<Candidate[]> {
-    return Array.from(this.candidates.values()).filter(
-      candidate => candidate.source === source
-    );
+    return db.select().from(candidates).where(eq(candidates.source, source));
   }
 
   async getAiRecommendedCandidates(): Promise<Candidate[]> {
-    return Array.from(this.candidates.values()).filter(
-      candidate => candidate.isAiRecommended
-    );
+    return db.select().from(candidates).where(eq(candidates.isAiRecommended, true));
   }
 
   async createCandidate(insertCandidate: InsertCandidate): Promise<Candidate> {
-    const id = randomUUID();
-    const candidate: Candidate = {
-      ...insertCandidate,
-      id,
-      skills: insertCandidate.skills || [],
-      experience: insertCandidate.experience || null,
-      summary: insertCandidate.summary || null,
-      aiScore: insertCandidate.aiScore || null,
-      isAiRecommended: insertCandidate.isAiRecommended || false,
-      status: "pending",
-      createdAt: new Date(),
-    };
-    this.candidates.set(id, candidate);
+    const [candidate] = await db
+      .insert(candidates)
+      .values({
+        ...insertCandidate,
+        status: "pending",
+      })
+      .returning();
+    
     return candidate;
   }
 
   async updateCandidateStatus(id: string, status: string): Promise<Candidate | undefined> {
-    const candidate = this.candidates.get(id);
-    if (candidate) {
-      candidate.status = status;
-      this.candidates.set(id, candidate);
-      return candidate;
-    }
-    return undefined;
+    const [candidate] = await db
+      .update(candidates)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(candidates.id, id))
+      .returning();
+    
+    return candidate;
+  }
+
+  async getCandidateStats(): Promise<{
+    totalCandidates: number;
+    aiRecommended: number;
+    linkedin: number;
+    indeed: number;
+    shortlisted: number;
+    contacted: number;
+    rejected: number;
+  }> {
+    const [stats] = await db
+      .select({
+        totalCandidates: sql<number>`count(*)::int`,
+        aiRecommended: sql<number>`count(*) filter (where is_ai_recommended = true)::int`,
+        linkedin: sql<number>`count(*) filter (where source = 'linkedin')::int`,
+        indeed: sql<number>`count(*) filter (where source = 'indeed')::int`,
+        shortlisted: sql<number>`count(*) filter (where status = 'shortlisted')::int`,
+        contacted: sql<number>`count(*) filter (where status = 'contacted')::int`,
+        rejected: sql<number>`count(*) filter (where status = 'rejected')::int`,
+      })
+      .from(candidates);
+
+    return stats;
   }
 
   async getUserActions(userId?: string): Promise<UserAction[]> {
